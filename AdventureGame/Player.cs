@@ -27,10 +27,31 @@ public class Player
     // Limited-use resource so specials feel meaningful without a cooldown system.
     public int SpecialUsesRemaining { get; set; }
 
+    // One-time consumable that restores a random 10-25% of MaxHP.
+    // Can be used at any point during the player's turn without consuming the action.
+    public bool HasHealthPotion { get; set; } = true;
+
     // True while the player is defending; halves the next incoming hit.
     public bool IsDefending { get; set; }
 
     public bool IsDead => HP <= 0;
+
+    // Consume the health potion, restoring 10-25% of MaxHP.
+    // Returns the amount actually healed, or 0 if no potion is available or already at full HP.
+    public int UseHealthPotion(Random rng)
+    {
+        if (!HasHealthPotion) return 0;
+        HasHealthPotion = false;
+
+        // Random percentage in [30, 60], rounded up so low-MaxHP classes still get at least 1 HP.
+        int percent = rng.Next(30, 61);
+        int healAmount = (MaxHP * percent + 99) / 100;
+
+        int before = HP;
+        HP += healAmount;
+        if (HP > MaxHP) HP = MaxHP;
+        return HP - before;
+    }
 
     // Reduce HP, honoring the Defense stat and the "defending" state.
     // Returns the actual damage dealt so the UI can report it.

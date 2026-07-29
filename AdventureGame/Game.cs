@@ -21,7 +21,7 @@ public static class Game
 
         // ---- 2. Ask the LLM for a themed adventure ----
         Console.WriteLine();
-        Console.WriteLine("Consulting the loremaster (Ollama) for your adventure...");
+        Console.WriteLine("Consulting the loremaster for your adventure...");
         Adventure adventure = await LlmService.GenerateAdventureAsync(theme, classType, name);
 
         Console.WriteLine();
@@ -35,6 +35,21 @@ public static class Game
         bool victory = true;
         for (int i = 0; i < adventure.Enemies.Count; i++)
         {
+            // Narrative interlude before each encounter to lengthen the storyline.
+            if (i < adventure.Interludes.Count)
+            {
+                string interlude = adventure.Interludes[i];
+                if (!string.IsNullOrWhiteSpace(interlude))
+                {
+                    Console.WriteLine();
+                    Console.ForegroundColor = ConsoleColor.Cyan;
+                    Console.WriteLine(interlude);
+                    Console.ResetColor();
+                    Console.WriteLine();
+                    Pause();
+                }
+            }
+
             Enemy enemy = adventure.Enemies[i];
             Console.WriteLine();
             Console.ForegroundColor = ConsoleColor.Magenta;
@@ -88,8 +103,12 @@ public static class Game
         while (!player.IsDead && !enemy.IsDead)
         {
             // Show current status.
-            Console.WriteLine($"[You: {player.HP}/{player.MaxHP} HP   |   {enemy.Name}: {enemy.HP} HP   |   {player.SpecialName} left: {player.SpecialUsesRemaining}]");
-            Console.WriteLine("Choose: (A)ttack  (D)efend  (S)pecial");
+            string potionLabel = player.HasHealthPotion ? "available" : "used";
+            Console.WriteLine($"[You: {player.HP}/{player.MaxHP} HP   |   {enemy.Name}: {enemy.HP} HP   |   {player.SpecialName} left: {player.SpecialUsesRemaining}   |   Potion: {potionLabel}]");
+            string actionMenu = player.HasHealthPotion
+                ? "Choose: (A)ttack  (D)efend  (S)pecial  (H)eal"
+                : "Choose: (A)ttack  (D)efend  (S)pecial";
+            Console.WriteLine(actionMenu);
             Console.Write("> ");
 
             string? choice = Console.ReadLine()?.Trim().ToLowerInvariant();
@@ -97,6 +116,25 @@ public static class Game
 
             switch (choice[0])
             {
+                case 'h':
+                    // Health potion consumes the player's turn — the enemy still retaliates after.
+                    if (!player.HasHealthPotion)
+                    {
+                        Console.WriteLine("You have no health potion remaining — pick again.");
+                        continue;
+                    }
+                    int healed = player.UseHealthPotion(Rng);
+                    if (healed <= 0)
+                    {
+                        Console.WriteLine("You're already at full health — the potion would be wasted. Pick again.");
+                        player.HasHealthPotion = true; // Refund since nothing was gained.
+                        continue;
+                    }
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine($"You quaff a health potion and recover {healed} HP.  (HP: {player.HP}/{player.MaxHP})");
+                    Console.ResetColor();
+                    break;
+
                 case 'a':
                     // Basic attack with small variance.
                     int atk = player.Attack + Rng.Next(0, 4);
@@ -121,12 +159,25 @@ public static class Game
                     break;
 
                 default:
-                    Console.WriteLine("Unknown command — pick A, D, or S.");
+                    Console.WriteLine("Unknown command — pick A, D, S, or H.");
                     continue;
             }
 
             // Enemy retaliates if it survived.
             if (enemy.IsDead) break;
+
+            // Enemy may unleash its one-shot special at any point during its turn.
+            // Trigger: the first turn the enemy drops below half HP — a desperate strike.
+            // Using the special consumes the enemy's turn (no normal attack this round).
+            if (enemy.HasSpecial && enemy.MaxHP > 0 && enemy.HP * 2 < enemy.MaxHP)
+            {
+                int sdmg = enemy.UseSpecial(player, Rng);
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"{enemy.Name} unleashes {enemy.SpecialName} for {sdmg} damage!");
+                Console.ResetColor();
+                Console.WriteLine();
+                continue;
+            }
 
             int incoming = enemy.Attack + Rng.Next(0, 3);
             int actual = player.TakeDamage(incoming);
@@ -141,7 +192,7 @@ public static class Game
     {
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine("=============================================");
-        Console.WriteLine("      OBE-ONE CLI ADVENTURE  (POC v1)");
+        Console.WriteLine("            FANTASY AI ADVENTURE");
         Console.WriteLine("=============================================");
         Console.ResetColor();
         Console.WriteLine();

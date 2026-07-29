@@ -1,4 +1,4 @@
-# Obe-One CLI Adventure
+# Fantasy AI Adventure
 
 A tiny text-based adventure RPG for the command line, built in .NET 10.
 Storyline and enemies are generated dynamically by a **local Ollama** model,
