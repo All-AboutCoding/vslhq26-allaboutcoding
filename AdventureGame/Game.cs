@@ -26,7 +26,7 @@ public static class Game
 
         Console.WriteLine();
         Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine(adventure.Intro);
+        Typewriter.WriteLine(adventure.Intro);
         Console.ResetColor();
         Console.WriteLine();
         Pause();
@@ -43,7 +43,7 @@ public static class Game
                 {
                     Console.WriteLine();
                     Console.ForegroundColor = ConsoleColor.Cyan;
-                    Console.WriteLine(interlude);
+                    Typewriter.WriteLine(interlude);
                     Console.ResetColor();
                     Console.WriteLine();
                     Pause();
@@ -55,7 +55,7 @@ public static class Game
             Console.ForegroundColor = ConsoleColor.Magenta;
             Console.WriteLine($"--- Encounter {i + 1} of 3: {enemy.Name} ---");
             Console.ResetColor();
-            Console.WriteLine(enemy.Description);
+            Typewriter.WriteLine(enemy.Description);
             Console.WriteLine();
 
             RunCombat(player, enemy);
@@ -78,7 +78,7 @@ public static class Game
         Console.ResetColor();
 
         string outcome = await LlmService.GenerateOutcomeNarrativeAsync(theme, name, victory);
-        Console.WriteLine(outcome);
+        Typewriter.WriteLine(outcome);
         Console.WriteLine();
 
         // ---- 5. Reward image ----
