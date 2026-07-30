@@ -1,11 +1,13 @@
 namespace AdventureGame;
 
-// The three character archetypes the player can pick.
+// The character archetypes the player can pick. `Custom` lets the user
+// define their own class name and signature move on top of a balanced stat block.
 public enum ClassType
 {
     Warrior,
     Mage,
-    Archer
+    Archer,
+    Custom
 }
 
 // The player character. Holds identity, stats, and the class-specific
@@ -15,6 +17,10 @@ public class Player
 {
     public string Name { get; set; } = "Hero";
     public ClassType Class { get; set; }
+
+    // Display name for the class — shown in prompts and passed to the LLM.
+    // For built-in classes this mirrors the enum name; for Custom it's the user-typed name.
+    public string ClassName { get; set; } = "";
 
     public int HP { get; set; }
     public int MaxHP { get; set; }
@@ -73,7 +79,14 @@ public class Player
 
     // Factory: builds a fresh Player with the stat block for the chosen class.
     // Tweak these numbers to rebalance the game.
-    public static Player CreateForClass(string name, ClassType classType)
+    // For ClassType.Custom, pass customClassName plus an optional customStats block
+    // (typically produced by LlmService.GenerateCustomClassAsync). If customStats
+    // is null a balanced default block is used.
+    public static Player CreateForClass(
+        string name,
+        ClassType classType,
+        string? customClassName = null,
+        CustomClassStats? customStats = null)
     {
         Player p = new Player { Name = name, Class = classType };
 
@@ -99,7 +112,24 @@ public class Player
                 p.SpecialName = "Piercing Shot";
                 p.SpecialUsesRemaining = 2;
                 break;
+
+            case ClassType.Custom:
+                // Prefer LLM-designed stats; fall back to a balanced middle-of-the-road block.
+                p.MaxHP = customStats?.HP ?? 32;
+                p.HP = p.MaxHP;
+                p.Attack = customStats?.Attack ?? 9;
+                p.Defense = customStats?.Defense ?? 2;
+                p.SpecialName = string.IsNullOrWhiteSpace(customStats?.SpecialName)
+                    ? "Signature Move"
+                    : customStats!.SpecialName;
+                p.SpecialUsesRemaining = customStats?.SpecialUses ?? 2;
+                break;
         }
+
+        // ClassName display: prefer user input for Custom, otherwise the enum name.
+        p.ClassName = classType == ClassType.Custom && !string.IsNullOrWhiteSpace(customClassName)
+            ? customClassName!.Trim()
+            : classType.ToString();
 
         return p;
     }
@@ -128,6 +158,11 @@ public class Player
                 // Piercing Shot: ignores enemy defense (we don't model enemy
                 // defense so just add a solid bonus on top of attack).
                 damage = Attack + 5 + rng.Next(0, 3);
+                break;
+
+            case ClassType.Custom:
+                // Balanced signature move: solid multiplier on Attack with small variance.
+                damage = (int)(Attack * 1.75) + rng.Next(1, 5);
                 break;
 
             default:

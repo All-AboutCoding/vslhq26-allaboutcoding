@@ -14,15 +14,30 @@ public static class Game
 
         // ---- 1. Gather player info ----
         string name = Prompt("Enter your hero's name: ", defaultValue: "Hero");
-        ClassType classType = PromptClass();
+        (ClassType classType, string? customClassName) = PromptClass();
         string theme = PromptTheme();
 
-        Player player = Player.CreateForClass(name, classType);
+        // For Custom classes, ask the LLM to design a balanced stat block and signature move.
+        CustomClassStats? customStats = null;
+        if (classType == ClassType.Custom)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"Consulting the loremaster to stat your {customClassName}...");
+            customStats = await LlmService.GenerateCustomClassAsync(customClassName ?? "Adventurer", name);
+            if (customStats != null && !string.IsNullOrWhiteSpace(customStats.Description))
+            {
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Typewriter.WriteLine(customStats.Description);
+                Console.ResetColor();
+            }
+        }
+
+        Player player = Player.CreateForClass(name, classType, customClassName, customStats);
 
         // ---- 2. Ask the LLM for a themed adventure ----
         Console.WriteLine();
         Console.WriteLine("Consulting the loremaster for your adventure...");
-        Adventure adventure = await LlmService.GenerateAdventureAsync(theme, classType, name);
+        Adventure adventure = await LlmService.GenerateAdventureAsync(theme, player.ClassName, name);
 
         Console.WriteLine();
         Console.ForegroundColor = ConsoleColor.Cyan;
@@ -85,7 +100,7 @@ public static class Game
         // Tone words swap based on the outcome per the requirement.
         string tone = victory ? "bright, epic, triumphant, golden light" : "dark, gloomy, somber, shadowy";
         string imagePrompt =
-            $"{theme} scene of a {classType} named {name}, {tone}, cinematic, highly detailed, 4k, 16:9";
+            $"{theme} scene of a {player.ClassName} named {name}, {tone}, cinematic, highly detailed, 4k, 16:9";
 
         string? savedPath = await ImageService.GenerateAndSaveAsync(imagePrompt);
         if (savedPath != null)
@@ -205,7 +220,10 @@ public static class Game
         return string.IsNullOrWhiteSpace(s) ? defaultValue : s.Trim();
     }
 
-    private static ClassType PromptClass()
+    // Prompt for class. Returns the chosen ClassType and, for Custom, the
+    // user-supplied class name (null for built-ins). Stats and signature move
+    // for Custom classes are generated later by the LLM.
+    private static (ClassType classType, string? customClassName) PromptClass()
     {
         while (true)
         {
@@ -213,12 +231,18 @@ public static class Game
             Console.WriteLine("  1) Warrior  (HP 40, Atk 8, Def 3, Power Strike)");
             Console.WriteLine("  2) Mage     (HP 25, Atk 10, Def 1, Fireball)");
             Console.WriteLine("  3) Archer   (HP 30, Atk 9, Def 2, Piercing Shot)");
+            Console.WriteLine("  4) Custom   (name your own class — the loremaster will design your stats and signature move)");
             Console.Write("> ");
             string? c = Console.ReadLine()?.Trim();
-            if (c == "1") return ClassType.Warrior;
-            if (c == "2") return ClassType.Mage;
-            if (c == "3") return ClassType.Archer;
-            Console.WriteLine("Please pick 1, 2, or 3.");
+            if (c == "1") return (ClassType.Warrior, null);
+            if (c == "2") return (ClassType.Mage, null);
+            if (c == "3") return (ClassType.Archer, null);
+            if (c == "4")
+            {
+                string customClass = Prompt("  Name your class (e.g., 'Necromancer', 'Bard'): ", defaultValue: "Adventurer");
+                return (ClassType.Custom, customClass);
+            }
+            Console.WriteLine("Please pick 1, 2, 3, or 4.");
         }
     }
 

@@ -39,7 +39,7 @@ public static class LlmService
     // whose expected JSON payloads are only 1-5 fields each. If any single sub-prompt
     // fails we substitute just that slot from the themed Fallback, so the rest of
     // the adventure stays LLM-generated.
-    public static async Task<Adventure> GenerateAdventureAsync(string theme, ClassType playerClass, string playerName)
+    public static async Task<Adventure> GenerateAdventureAsync(string theme, string playerClass, string playerName)
     {
         Adventure fallback = Fallback(theme);
         Adventure adventure = new Adventure();
@@ -159,6 +159,33 @@ public static class LlmService
             Attack = attack,
             SpecialName = special
         };
+    }
+
+    // Ask the LLM to design a custom class: stats, signature move, uses, and a
+    // one-sentence flavor description. Returns null on any failure so the caller
+    // can substitute balanced defaults.
+    public static async Task<CustomClassStats?> GenerateCustomClassAsync(string className, string playerName)
+    {
+        CustomClassDto? dto = await AskOllamaJsonAsync<CustomClassDto>(
+            $"You are a tabletop game designer statting a custom RPG class named \"{className}\" for a hero named {playerName}. " +
+            "Balance the class so it is competitive with archetypes like Warrior (HP 40, Atk 8, Def 3), Mage (HP 25, Atk 10, Def 1), and Archer (HP 30, Atk 9, Def 2). " +
+            "HP must be an integer in [25,40]. Attack must be an integer in [7,11]. Defense must be an integer in [1,4]. SpecialUses must be an integer in [2,3]. " +
+            "SpecialName is a short flavor name (2-4 words) for the class's signature move that thematically fits the class. " +
+            "Description is ONE short sentence describing the class's fighting style. " +
+            "Respond ONLY with valid JSON matching this exact shape (no markdown, no prose, no code fences): " +
+            "{\"hp\":<int>,\"attack\":<int>,\"defense\":<int>,\"specialUses\":<int>,\"specialName\":\"...\",\"description\":\"...\"}");
+
+        if (dto == null) return null;
+
+        // Clamp any out-of-range values so a wildly off response can't unbalance combat.
+        int hp = Math.Clamp(dto.HP == 0 ? 32 : dto.HP, 25, 40);
+        int attack = Math.Clamp(dto.Attack == 0 ? 9 : dto.Attack, 7, 11);
+        int defense = Math.Clamp(dto.Defense == 0 ? 2 : dto.Defense, 1, 4);
+        int uses = Math.Clamp(dto.SpecialUses == 0 ? 2 : dto.SpecialUses, 2, 3);
+        string special = string.IsNullOrWhiteSpace(dto.SpecialName) ? "Signature Move" : dto.SpecialName!.Trim();
+        string desc = string.IsNullOrWhiteSpace(dto.Description) ? "" : dto.Description!.Trim();
+
+        return new CustomClassStats(hp, attack, defense, uses, special, desc);
     }
 
     // Optional short flavor text for the ending. Falls back to a canned line.
@@ -281,4 +308,29 @@ public static class LlmService
         [JsonPropertyName("special")]
         public string? Special { get; set; }
     }
+
+    private class CustomClassDto
+    {
+        [JsonPropertyName("hp")]
+        public int HP { get; set; }
+        [JsonPropertyName("attack")]
+        public int Attack { get; set; }
+        [JsonPropertyName("defense")]
+        public int Defense { get; set; }
+        [JsonPropertyName("specialUses")]
+        public int SpecialUses { get; set; }
+        [JsonPropertyName("specialName")]
+        public string? SpecialName { get; set; }
+        [JsonPropertyName("description")]
+        public string? Description { get; set; }
+    }
 }
+
+// Result of an LLM-generated custom class. Public so Game.cs can consume it.
+public record CustomClassStats(
+    int HP,
+    int Attack,
+    int Defense,
+    int SpecialUses,
+    string SpecialName,
+    string Description);
