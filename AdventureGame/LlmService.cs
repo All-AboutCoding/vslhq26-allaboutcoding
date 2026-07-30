@@ -32,26 +32,85 @@ public static class LlmService
         Timeout = TimeSpan.FromMinutes(3)
     };
 
-    // Ask the LLM for a themed adventure. Never throws — returns fallback on error.
+    // Ask the LLM for a themed adventure. Never throws — falls back per piece on error.
+    //
+    // Strategy: instead of one large monolithic prompt (which llama3.2 frequently
+    // returns as malformed / truncated JSON), we issue a series of tiny prompts
+    // whose expected JSON payloads are only 1-5 fields each. If any single sub-prompt
+    // fails we substitute just that slot from the themed Fallback, so the rest of
+    // the adventure stays LLM-generated.
     public static async Task<Adventure> GenerateAdventureAsync(string theme, ClassType playerClass, string playerName)
     {
-        // Prompt is crafted to force strict JSON output so we can deserialize safely.
-        string prompt =
-            $"You are a game master creating a {theme} themed adventure for a {playerClass} named {playerName}. " +
-            "Respond ONLY with valid JSON in this exact shape (no markdown, no commentary): " +
-            "{\"intro\":\"3-4 sentence storyline intro that sets the world, stakes, and hero's motivation\"," +
-            "\"interludes\":[\"3-4 sentence scene leading to the first encounter\"," +
-            "\"3-4 sentence scene between the first and second encounters that deepens the story and reveals a new detail\"," +
-            "\"3-4 sentence scene between the second and third encounters that raises the stakes toward the climax\"]," +
-            "\"enemies\":[{\"name\":\"...\",\"description\":\"1 sentence\",\"hp\":15-30,\"attack\":4-10}," +
-            "{\"name\":\"...\",\"description\":\"1 sentence\",\"hp\":20-30,\"attack\":5-10}," +
-            "{\"name\":\"...\",\"description\":\"1 sentence\",\"hp\":25-40,\"attack\":6-10}]}. " +
-            "Enemies must escalate in difficulty and fit the theme. Interludes must reference the hero by name and connect narratively to the enemy that follows.";
+        Adventure fallback = Fallback(theme);
+        Adventure adventure = new Adventure();
 
+        // ---- 1. Intro ----
+        IntroDto? introDto = await AskOllamaJsonAsync<IntroDto>(
+            $"You are a game master creating a {theme} themed adventure for a {playerClass} named {playerName}. " +
+            "Write a 3-4 sentence storyline intro that sets the world, the stakes, and the hero's motivation. " +
+            "Reference the hero by name. " +
+            "Respond ONLY with valid JSON matching this exact shape (no markdown, no prose, no code fences): " +
+            "{\"intro\":\"...\"}");
+
+        adventure.Intro = !string.IsNullOrWhiteSpace(introDto?.Intro) ? introDto!.Intro! : fallback.Intro;
+
+        // ---- 2. Three enemies (sequentially so we can pass prior names to avoid duplicates) ----
+        (int hpMin, int hpMax, int atkMin, int atkMax)[] tiers =
+        {
+            (15, 20, 4, 6),
+            (22, 30, 6, 8),
+            (32, 40, 9, 11),
+        };
+
+        for (int i = 0; i < 3; i++)
+        {
+            var (hpMin, hpMax, atkMin, atkMax) = tiers[i];
+            string priorNames = adventure.Enemies.Count == 0
+                ? "none"
+                : string.Join(", ", adventure.Enemies.Select(e => e.Name));
+
+            EnemyDto? enemyDto = await AskOllamaJsonAsync<EnemyDto>(
+                $"You are a game master creating a {theme} themed adventure for a {playerClass} named {playerName}. " +
+                $"Design encounter {i + 1} of 3 (tier {i + 1}: {(i == 0 ? "easy" : i == 1 ? "medium" : "climactic boss")}). " +
+                $"Do not reuse these names: {priorNames}. " +
+                $"HP must be an integer in [{hpMin},{hpMax}]. Attack must be an integer in [{atkMin},{atkMax}]. " +
+                "Respond ONLY with valid JSON matching this exact shape (no markdown, no prose, no code fences): " +
+                "{\"name\":\"...\",\"description\":\"1 sentence\",\"hp\":<int>,\"attack\":<int>,\"special\":\"short flavor name of a signature move\"}");
+
+            Enemy enemy = BuildEnemy(enemyDto, fallback.Enemies[i], hpMin, hpMax, atkMin, atkMax);
+            adventure.Enemies.Add(enemy);
+        }
+
+        // ---- 3. Three interludes (each depends on the enemy it introduces) ----
+        for (int i = 0; i < adventure.Enemies.Count; i++)
+        {
+            string previousEnemy = i == 0 ? "none — this is the opening scene" : adventure.Enemies[i - 1].Name;
+            string upcomingEnemy = adventure.Enemies[i].Name;
+
+            InterludeDto? interludeDto = await AskOllamaJsonAsync<InterludeDto>(
+                $"You are continuing a {theme} themed adventure for a {playerClass} named {playerName}. " +
+                $"Intro context: \"{adventure.Intro}\". " +
+                $"Previous enemy: {previousEnemy}. Upcoming enemy: {upcomingEnemy}. " +
+                "Write a 3-4 sentence scene that transitions from the previous moment to the upcoming encounter, " +
+                "references the hero by name, and hints at the upcoming enemy without naming its stats. " +
+                "Respond ONLY with valid JSON matching this exact shape (no markdown, no prose, no code fences): " +
+                "{\"interlude\":\"...\"}");
+
+            string interlude = !string.IsNullOrWhiteSpace(interludeDto?.Interlude)
+                ? interludeDto!.Interlude!
+                : (i < fallback.Interludes.Count ? fallback.Interludes[i] : "");
+            adventure.Interludes.Add(interlude);
+        }
+
+        return adventure;
+    }
+
+    // Shared helper: POST a tiny JSON-format prompt to Ollama and deserialize the
+    // wrapped response into T. Returns null on any failure (network, HTTP, or JSON).
+    private static async Task<T?> AskOllamaJsonAsync<T>(string prompt) where T : class
+    {
         try
         {
-            // Ollama /api/generate request body. `format:"json"` tells it to
-            // constrain output to JSON. `stream:false` gives us one response.
             var request = new
             {
                 model = Model,
@@ -63,54 +122,43 @@ public static class LlmService
             HttpResponseMessage resp = await Http.PostAsJsonAsync(OllamaUrl, request);
             resp.EnsureSuccessStatusCode();
 
-            // Ollama wraps the model's response text in a JSON envelope: { "response": "...json string..." }
             OllamaResponse? envelope = await resp.Content.ReadFromJsonAsync<OllamaResponse>();
             if (envelope == null || string.IsNullOrWhiteSpace(envelope.Response))
-                return Fallback(theme);
+                return null;
 
-            // Parse the inner JSON payload (the actual adventure data).
-            AdventureDto? dto = JsonSerializer.Deserialize<AdventureDto>(
+            return JsonSerializer.Deserialize<T>(
                 envelope.Response,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-
-            if (dto == null || dto.Enemies == null || dto.Enemies.Count < 3)
-                return Fallback(theme);
-
-            // Convert DTO -> real Enemy objects, taking only the first 3.
-            Adventure adventure = new Adventure { Intro = dto.Intro ?? "" };
-            foreach (var e in dto.Enemies.Take(3))
-            {
-                int hp = e.HP > 0 ? e.HP : 20;
-                adventure.Enemies.Add(new Enemy
-                {
-                    Name = string.IsNullOrWhiteSpace(e.Name) ? "Nameless Horror" : e.Name,
-                    Description = e.Description ?? "",
-                    HP = hp,
-                    MaxHP = hp,
-                    Attack = e.Attack > 0 ? e.Attack : 5,
-                    SpecialName = string.IsNullOrWhiteSpace(e.Special) ? "Savage Blow" : e.Special
-                });
-            }
-
-            // Copy up to 3 interludes; pad with empties so index-alignment with enemies is safe.
-            if (dto.Interludes != null)
-            {
-                foreach (string s in dto.Interludes.Take(3))
-                    adventure.Interludes.Add(s ?? "");
-            }
-            while (adventure.Interludes.Count < adventure.Enemies.Count)
-                adventure.Interludes.Add("");
-
-            return adventure;
         }
         catch (Exception ex)
         {
-            // Print a friendly warning and use fallback content so the game still runs.
             Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine($"[LLM unavailable: {ex.Message}. Using built-in adventure.]");
+            Console.WriteLine($"[LLM sub-prompt failed: {ex.Message}. Using fallback for this piece.]");
             Console.ResetColor();
-            return Fallback(theme);
+            return null;
         }
+    }
+
+    // Build a validated Enemy from a possibly-null DTO, using the same-tier
+    // fallback enemy to fill any missing / out-of-range fields.
+    private static Enemy BuildEnemy(EnemyDto? dto, Enemy fallback, int hpMin, int hpMax, int atkMin, int atkMax)
+    {
+        string name = !string.IsNullOrWhiteSpace(dto?.Name) ? dto!.Name! : fallback.Name;
+        string desc = !string.IsNullOrWhiteSpace(dto?.Description) ? dto!.Description! : fallback.Description;
+        string special = !string.IsNullOrWhiteSpace(dto?.Special) ? dto!.Special! : fallback.SpecialName;
+
+        int hp = dto != null && dto.HP >= hpMin && dto.HP <= hpMax ? dto.HP : fallback.HP;
+        int attack = dto != null && dto.Attack >= atkMin && dto.Attack <= atkMax ? dto.Attack : fallback.Attack;
+
+        return new Enemy
+        {
+            Name = name,
+            Description = desc,
+            HP = hp,
+            MaxHP = hp,
+            Attack = attack,
+            SpecialName = special
+        };
     }
 
     // Optional short flavor text for the ending. Falls back to a canned line.
@@ -208,16 +256,16 @@ public static class LlmService
         public string? Response { get; set; }
     }
 
-    private class AdventureDto
+    private class IntroDto
     {
         [JsonPropertyName("intro")]
         public string? Intro { get; set; }
+    }
 
-        [JsonPropertyName("interludes")]
-        public List<string>? Interludes { get; set; }
-
-        [JsonPropertyName("enemies")]
-        public List<EnemyDto>? Enemies { get; set; }
+    private class InterludeDto
+    {
+        [JsonPropertyName("interlude")]
+        public string? Interlude { get; set; }
     }
 
     private class EnemyDto
