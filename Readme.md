@@ -54,3 +54,10 @@ dotnet run --project AdventureGame
 ```
 
 If Ollama isn't running or a sub-prompt fails, the game still plays — the affected pieces fall back to built-in content per theme.
+
+## License & attribution
+
+This project is released under the [MIT License](./LICENSE).
+
+Built with Llama. See [CREDITS.md](./CREDITS.md) for third-party notices,
+including the Llama 3.2 Community License, Ollama, and Pollinations.ai.
